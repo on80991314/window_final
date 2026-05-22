@@ -1,1 +1,908 @@
-"""\nthunder_typer.py  (改善版)\n=========================\n雷霆打字戰機  — 改善版\n\n改善項目：\n  1. 真正的子彈碰撞偵測（bbox 交叉判定）\n  2. 爆炸粒子效果（Explosion class）\n  3. 難度分級：每 300 分提升一級，速度與生成頻率雙管齊下\n  4. 重玩按鈕（不需關閉視窗）\n  5. 受傷畫面紅色閃爍回饋\n  6. 修正 import math 放在迴圈內的效能問題\n  7. 修正 ttk.Style() 每幀重建的效能浪費\n  8. 生成單字去重複（避免同一單字同時出現在畫面上）\n  9. Escape 鍵暫停功能\n  10. 波次（Wave）提示文字\n"""\n\nimport tkinter as tk\nfrom tkinter import ttk\nimport random\nimport string\nimport math\n\n# ══════════════════════════════════════════════════════════════════════════════\n#  遊戲全域常數\n# ══════════════════════════════════════════════════════════════════════════════\n\nCANVAS_W      = 620\nCANVAS_H      = 700\nFPS_MS        = 33           # 約 30 FPS\nENEMY_SPEED   = 0.9          # 初始敵機速度\nSPAWN_MS      = 2800         # 初始生成間隔（ms）\nMAX_ENEMIES   = 9\nBULLET_SPEED  = 14\nMAX_HP        = 100\nDAMAGE        = 22\nCHAR_W        = 7\n\n# 難度提升參數\nDIFF_SCORE_STEP   = 300      # 每累積這麼多分提升一級難度\nDIFF_SPEED_INC    = 0.15     # 每級速度增量\nDIFF_SPAWN_DEC    = 200      # 每級生成間隔縮短（ms）\nDIFF_SPAWN_MIN    = 900      # 生成間隔下限（ms）\nDIFF_MAX_LEVEL    = 10       # 最高難度等級\n\nWORDS = list(set([\n    # 4 字母\n    "able","acid","aged","also","apex","arch","army","atom",\n    "back","barn","beam","bird","blue","bold","bond","bred",\n    "cage","calm","cave","chin","chip","claw","clay","clue",\n    "damp","dare","dark","data","dawn","deal","deck","dome",\n    "echo","edge","emit","epic","even","evil","exam","exit",\n    # 5 字母\n    "alpha","blaze","brave","brick","cable","chase","chess",\n    "chord","clash","cloud","cobra","coral","crane","crisp","crown",\n    "delta","depth","digit","dingo","disco","draft","drain","drift",\n    "eagle","early","earth","eight","elite","ember","epoch","error",\n    "fable","faith","false","fault","feast","fever","fifth","fixed",\n    "flame","flash","flint","flood","flora","focus","force","forge",\n    "frost","globe","grace","grade","grain","grand","grant","grasp",\n    "grave","graze","greed","green","greet","grind","groan","guard",\n    "hazel","heavy","heist","helix","honor","horse","hover","human",\n    "humid","haste","hyper","ideal","index","indie","infer","intel",\n    "ivory","jewel","joint","joker","judge","juice","karma","knife",\n    "laser","layer","learn","legal","lemma","level","light","limit",\n    "logic","lunar","magic","maple","march","marsh","match","maxim",\n    "merge","metal","might","mimic","minor","minus","model","motor",\n    "nexus","night","ninja","noble","noise","north","novel","nymph",\n    "oasis","ocean","onset","order","orbit","other","outer","oxide",\n    "panel","paper","patch","pause","pearl","phase","pilot","pixel",\n    "polar","power","press","prism","probe","prone","proxy","pulse",\n    "quest","quick","quiet","quota","quote","radar","radix","rally",\n    "range","rapid","ratio","razor","reach","realm","relay","relic",\n    "remix","renew","repel","reset","ridge","risky","rival","river",\n    "robot","rocky","rouge","round","route","royal","ruled","runes",\n    "sabre","scale","scope","scout","seize","servo","seven","shade",\n    "sigma","skate","skill","slave","slice","slide","slope","smoke",\n    "snake","solar","solid","solve","sonar","sound","south","spark",\n    "spawn","speed","spell","spend","spire","spoke","spore","sport",\n    "spray","squad","stack","staff","stage","stake","stall","stamp",\n    "stand","stark","start","state","stave","steal","steel","steep",\n    "stern","stick","sting","stock","stomp","stone","store","storm",\n    "story","stove","strap","straw","stray","strip","strum","strut",\n    "stuck","study","style","surge","swamp","swarm","sweep","swept",\n    "swift","sword","swirl","syrup","tango","taunt","tempo","tense",\n    "tiger","tight","tilde","timer","titan","token","topaz","torch",\n    "total","tower","trace","track","trade","trail","train","trait",\n    "tramp","trash","trawl","triad","tribe","trick","trill","troop",\n    "trove","truce","truly","trump","trunk","trust","truth","turbo",\n    "tweak","twirl","twist","ultra","unity","until","upper","usher",\n    "valor","valve","vault","venom","vexed","viral","virus","visor",\n    "vista","vital","vixen","voter","viper","waves","weave",\n    "wedge","whirl","wield","witch","witty","xenon","yacht","yield",\n    "young","zoned","zones","zooms","zesty","zebra",\n    # 6-7 字母（高難度用）\n    "battle","castle","circle","combat","danger","empire",\n    "energy","engine","falcon","flight","forest","frozen",\n    "galaxy","gamble","garden","golden","hunter","jungle",\n    "legend","matrix","mirror","mission","mystic","nature",\n    "nebula","nether","palace","planet","plasma","python",\n    "rafter","random","reborn","rescue","rocket","rumble",\n    "savage","scroll","server","shadow","signal","simple",\n    "sorcery","spider","spirit","static","stream","strike",\n    "strobe","strong","studio","system","target","temple",\n    "throne","thunder","toggle","travel","tundra","turret",\n    "vector","vertex","Viking","vortex","warden","weapon",\n    "window","winter","wizard","wonder",\n]))\n\n\n# ══════════════════════════════════════════════════════════════════════════════\n#  Explosion（爆炸粒子）類別  ── 新增\n# ══════════════════════════════════════════════════════════════════════════════\n\nclass Explosion:\n    """\n    在指定位置產生一組放射狀粒子，模擬爆炸效果。\n    使用 after() 驅動，每幀移動並淡化粒子顏色，生命結束後自動清除。\n    """\n\n    # 爆炸粒子顏色序列（從亮到暗，模擬冷卻）\n    _COLORS = ["#FFFFFF", "#FFEE88", "#FFAA33", "#FF6600", "#CC3300", "#882200"]\n\n    def __init__(self, canvas: tk.Canvas, x: float, y: float,\n                 root: tk.Tk, count: int = 10):\n        """\n        參數：\n            canvas  -- 目標 Canvas\n            x, y    -- 爆炸中心座標\n            root    -- 用於 after() 排程\n            count   -- 粒子數量（預設 10）\n        """\n        self.canvas  = canvas\n        self.root    = root\n        self._items  = []   # Canvas oval item ids\n        self._vels   = []   # 各粒子速度向量 (vx, vy)\n        self._life   = len(self._COLORS)  # 剩餘幀數\n\n        # 建立粒子（以 360° 均勻分散為基礎，加入隨機擾動）\n        for i in range(count):\n            angle = (2 * math.pi / count) * i + random.uniform(-0.3, 0.3)\n            speed = random.uniform(1.5, 4.5)\n            vx    = math.cos(angle) * speed\n            vy    = math.sin(angle) * speed\n            r     = random.randint(2, 4)\n            oval  = canvas.create_oval(\n                x - r, y - r, x + r, y + r,\n                fill=self._COLORS[0], outline=""\n            )\n            self._items.append(oval)\n            self._vels.append((vx, vy))\n\n        self._animate()\n\n    def _animate(self):\n        """每幀移動粒子並切換顏色；生命耗盡後清除所有 item。"""\n        if self._life <= 0:\n            for oid in self._items:\n                self.canvas.delete(oid)\n            return\n\n        color = self._COLORS[len(self._COLORS) - self._life]\n        for i, oid in enumerate(self._items):\n            vx, vy = self._vels[i]\n            self.canvas.move(oid, vx, vy)\n            self.canvas.itemconfig(oid, fill=color)\n\n        self._life -= 1\n        self.root.after(40, self._animate)\n\n\n# ══════════════════════════════════════════════════════════════════════════════\n#  Enemy（敵機）類別\n# ══════════════════════════════════════════════════════════════════════════════\n\nclass Enemy:\n    COLOR_FILL    = "#BB2020"\n    COLOR_OUTLINE = "#FF5555"\n    COLOR_LOCKED  = "#FFFF00"\n    COLOR_TYPED   = "#FFE033"\n    COLOR_REMAIN  = "#E8E8E8"\n\n    def __init__(self, canvas: tk.Canvas, word: str, x: int):\n        self.canvas = canvas\n        self.word   = word\n        self.typed  = 0\n        self.x      = float(x)\n        self.y      = 20.0\n        self.alive  = True\n        self.speed  = ENEMY_SPEED   # ← 改善：速度儲存在實例上，方便難度系統修改\n\n        self._hw = max(len(word) * 5 + 22, 40)\n        self._hh = 15\n        self._txt_start_x = x - len(word) * CHAR_W / 2\n        self._txt_y       = self.y - self._hh - 14\n\n        self._rect = canvas.create_rectangle(\n            x - self._hw, self.y - self._hh,\n            x + self._hw, self.y + self._hh,\n            fill=self.COLOR_FILL,\n            outline=self.COLOR_OUTLINE,\n            width=2,\n        )\n        self._typed_txt = canvas.create_text(\n            self._txt_start_x, self._txt_y,\n            text="",\n            fill=self.COLOR_TYPED,\n            font=("Courier", 11, "bold"),\n            anchor="w",\n        )\n        self._remain_txt = canvas.create_text(\n            self._txt_start_x, self._txt_y,\n            text=word,\n            fill=self.COLOR_REMAIN,\n            font=("Courier", 11, "bold"),\n            anchor="w",\n        )\n\n    def _refresh_text(self):\n        typed_str  = self.word[:self.typed]\n        remain_str = self.word[self.typed:]\n        remain_x   = self._txt_start_x + self.typed * CHAR_W\n        self.canvas.itemconfig(self._typed_txt,  text=typed_str)\n        self.canvas.itemconfig(self._remain_txt, text=remain_str)\n        self.canvas.coords(self._remain_txt, remain_x, self._txt_y)\n\n    def move_down(self):\n        """改善：使用 self.speed 而非全域 ENEMY_SPEED，支援難度分級。"""\n        self.y      += self.speed\n        self._txt_y += self.speed\n        self.canvas.move(self._rect,       0, self.speed)\n        self.canvas.move(self._typed_txt,  0, self.speed)\n        self.canvas.move(self._remain_txt, 0, self.speed)\n\n    def try_type(self, char: str) -> bool:\n        if self.typed < len(self.word) and self.word[self.typed] == char:\n            self.typed += 1\n            self._refresh_text()\n            return True\n        return False\n\n    def is_done(self) -> bool:\n        return self.typed == len(self.word)\n\n    def first_char_matches(self, char: str) -> bool:\n        return self.typed == 0 and bool(self.word) and self.word[0] == char\n\n    def set_locked(self, locked: bool):\n        if locked:\n            self.canvas.itemconfig(self._rect, outline=self.COLOR_LOCKED, width=3)\n        else:\n            self.canvas.itemconfig(self._rect, outline=self.COLOR_OUTLINE, width=2)\n\n    def get_bbox(self) -> tuple:\n        """改善：回傳矩形的 bounding box (x1,y1,x2,y2)，供碰撞偵測使用。"""\n        return (self.x - self._hw, self.y - self._hh,\n                self.x + self._hw, self.y + self._hh)\n\n    def destroy(self):\n        self.canvas.delete(self._rect)\n        self.canvas.delete(self._typed_txt)\n        self.canvas.delete(self._remain_txt)\n        self.alive = False\n\n\n# ══════════════════════════════════════════════════════════════════════════════\n#  Bullet（子彈）類別\n# ══════════════════════════════════════════════════════════════════════════════\n\nclass Bullet:\n    """改善：移除內部 import math（已移至模組頂層）。"""\n\n    def __init__(self, canvas: tk.Canvas,\n                 sx: float, sy: float,\n                 tx: float, ty: float):\n        self.canvas = canvas\n        self.x      = float(sx)\n        self.y      = float(sy)\n        self.alive  = True\n\n        dx   = tx - sx\n        dy   = ty - sy\n        dist = math.hypot(dx, dy)\n        if dist == 0:\n            self._vx, self._vy = 0.0, -1.0\n        else:\n            self._vx = (dx / dist) * BULLET_SPEED\n            self._vy = (dy / dist) * BULLET_SPEED\n\n        self._oval = canvas.create_oval(\n            sx - 3, sy - 5, sx + 3, sy + 5,\n            fill="#00FFCC", outline="",\n        )\n\n    def move(self):\n        self.x += self._vx\n        self.y += self._vy\n        self.canvas.move(self._oval, self._vx, self._vy)\n        if self.y < 0 or self.y > CANVAS_H or self.x < 0 or self.x > CANVAS_W:\n            self.destroy()\n\n    def destroy(self):\n        self.canvas.delete(self._oval)\n        self.alive = False\n\n\n# ══════════════════════════════════════════════════════════════════════════════\n#  Game（遊戲主控制器）類別\n# ══════════════════════════════════════════════════════════════════════════════\n\nclass Game:\n    """\n    改善版遊戲主控制器。\n    新增：碰撞偵測、爆炸效果、難度系統、重玩、受傷閃爍、暫停。\n    """\n\n    def __init__(self, root: tk.Tk):\n        self.root = root\n        self._hp_style = ttk.Style()   # 改善：建立一次，不在 _take_damage 內重建\n        self._hp_style.theme_use("clam")\n        self._configure_hp_style("#22DD66")\n\n        self._flash_id = None          # 受傷閃爍排程 id\n        self._paused   = False         # 暫停狀態\n        self._wave_tid = None          # 波次文字 canvas item id\n\n        self._reset_state()\n        self._build_ui()\n        self._draw_player()\n        self._bind_keys()\n        self.root.after(800,    self._spawn_enemy)\n        self.root.after(FPS_MS, self._game_loop)\n\n    # ── 狀態重置（支援重玩） ────────────────────────────────────────────────\n    def _reset_state(self):\n        """將所有遊戲狀態歸零，供首次啟動與重玩共用。"""\n        self.score      = 0\n        self.combo      = 0\n        self.max_combo  = 0\n        self.hp         = MAX_HP\n        self.game_over  = False\n        self._paused    = False\n        self._diff_level = 0           # 當前難度等級\n        self._current_speed = ENEMY_SPEED\n        self._current_spawn = SPAWN_MS\n        self.enemies = []\n        self.bullets = []\n        self.locked  = None\n        self._px = CANVAS_W // 2\n        self._py = CANVAS_H - 40\n        self._active_words = set()    # 改善：紀錄畫面上已存在的單字，避免重複\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  UI 建構\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _build_ui(self):\n        self.root.configure(bg="#07071A")\n\n        top = tk.Frame(self.root, bg="#07071A")\n        top.pack(fill=tk.X, padx=14, pady=(8, 3))\n\n        tk.Label(top, text="SCORE",\n                 bg="#07071A", fg="#445566",\n                 font=("Courier", 8, "bold")).pack(side=tk.LEFT)\n\n        self._score_var = tk.StringVar(value="0")\n        tk.Label(top, textvariable=self._score_var,\n                 bg="#07071A", fg="#FFFFFF",\n                 font=("Courier", 14, "bold"),\n                 width=8, anchor="w").pack(side=tk.LEFT, padx=(3, 18))\n\n        # 難度等級顯示  ── 新增\n        tk.Label(top, text="LV",\n                 bg="#07071A", fg="#445566",\n                 font=("Courier", 8, "bold")).pack(side=tk.LEFT)\n        self._lv_var = tk.StringVar(value="1")\n        tk.Label(top, textvariable=self._lv_var,\n                 bg="#07071A", fg="#88CCFF",\n                 font=("Courier", 14, "bold"),\n                 width=3, anchor="w").pack(side=tk.LEFT, padx=(3, 18))\n\n        tk.Label(top, text="COMBO",\n                 bg="#07071A", fg="#445566",\n                 font=("Courier", 8, "bold")).pack(side=tk.LEFT)\n\n        self._combo_var = tk.StringVar(value="×0")\n        self._combo_lbl = tk.Label(top, textvariable=self._combo_var,\n                                   bg="#07071A", fg="#FFEE44",\n                                   font=("Courier", 14, "bold"),\n                                   width=6, anchor="w")\n        self._combo_lbl.pack(side=tk.LEFT, padx=(3, 0))\n\n        hp_frame = tk.Frame(top, bg="#07071A")\n        hp_frame.pack(side=tk.RIGHT)\n\n        tk.Label(hp_frame, text="HP",\n                 bg="#07071A", fg="#445566",\n                 font=("Courier", 8, "bold")).pack(side=tk.LEFT, padx=(0, 5))\n\n        self._hp_var = tk.IntVar(value=MAX_HP)\n        self._hp_bar = ttk.Progressbar(\n            hp_frame,\n            variable=self._hp_var,\n            maximum=MAX_HP,\n            length=170,\n            style="hp.Horizontal.TProgressbar",\n            mode="determinate",\n        )\n        self._hp_bar.pack(side=tk.LEFT)\n\n        # 主遊戲 Canvas\n        self.canvas = tk.Canvas(\n            self.root,\n            width=CANVAS_W, height=CANVAS_H,\n            bg="#080820",\n            highlightthickness=1,\n            highlightbackground="#1A2A40",\n        )\n        self.canvas.pack(padx=14, pady=(2, 2))\n        self._draw_starfield()\n\n        self.canvas.create_line(\n            0, CANVAS_H - 65, CANVAS_W, CANVAS_H - 65,\n            fill="#151530", width=1, dash=(5, 5)\n        )\n\n        self._hint_lbl = tk.Label(\n            self.root,\n            text="輸入首字母→鎖定（黃框）→ 打完整單字→擊毀！  錯字=Combo歸零  ESC=暫停",\n            bg="#07071A", fg="#2A3A4A",\n            font=("Courier", 8),\n        )\n        self._hint_lbl.pack(pady=(0, 7))\n\n    def _configure_hp_style(self, color: str):\n        """改善：集中設定 HP 進度條顏色，只需傳入顏色字串。"""\n        self._hp_style.configure(\n            "hp.Horizontal.TProgressbar",\n            troughcolor="#111128",\n            background=color,\n            bordercolor="#223344",\n            lightcolor=color,\n            darkcolor=color,\n        )\n\n    def _draw_starfield(self):\n        random.seed(42)\n        for _ in range(120):\n            sx = random.randint(0, CANVAS_W)\n            sy = random.randint(0, CANVAS_H - 80)\n            brightness = random.choice(["#1A1A38", "#222244", "#2A2A55"])\n            r = random.choice([1, 1, 1, 2])\n            self.canvas.create_oval(sx - r, sy - r, sx + r, sy + r,\n                                    fill=brightness, outline="")\n        random.seed()\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  玩家戰機繪製\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _draw_player(self):\n        cx, cy = self._px, self._py\n        self.canvas.create_polygon(\n            cx-8, cy+20, cx, cy+36, cx+8, cy+20,\n            fill="#FF6600", outline="", tags="player")\n        self.canvas.create_polygon(\n            cx-4, cy+20, cx, cy+28, cx+4, cy+20,\n            fill="#FFCC00", outline="", tags="player")\n        self.canvas.create_polygon(\n            cx-14, cy-6, cx-40, cy+20, cx-14, cy+20,\n            fill="#0A5588", outline="", tags="player")\n        self.canvas.create_polygon(\n            cx+14, cy-6, cx+40, cy+20, cx+14, cy+20,\n            fill="#0A5588", outline="", tags="player")\n        self.canvas.create_rectangle(\n            cx-13, cy-24, cx+13, cy+20,\n            fill="#1177CC", outline="#44AAFF", width=2, tags="player")\n        self.canvas.create_rectangle(\n            cx-4, cy-38, cx+4, cy-24,\n            fill="#33CCFF", outline="", tags="player")\n        self.canvas.create_oval(\n            cx-5, cy-44, cx+5, cy-36,\n            fill="#88EEFF", outline="", tags="player")\n        self.canvas.create_oval(\n            cx-8, cy-18, cx+8, cy-4,\n            fill="#88DDFF", outline="#AAEEFF", tags="player")\n        self.canvas.create_oval(\n            cx-42, cy+18, cx-38, cy+22,\n            fill="#FF3333", outline="", tags="player")\n        self.canvas.create_oval(\n            cx+38, cy+18, cx+42, cy+22,\n            fill="#FF3333", outline="", tags="player")\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  鍵盤事件\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _bind_keys(self):\n        self.root.bind("<KeyPress>", self._on_key)\n\n    def _on_key(self, event: tk.Event):\n        # ESC 鍵：暫停 / 繼續  ── 新增\n        if event.keysym == "Escape":\n            self._toggle_pause()\n            return\n\n        if self.game_over or self._paused:\n            return\n\n        ch = event.char.lower()\n        if ch not in string.ascii_lowercase:\n            return\n\n        if self.locked is None:\n            for enemy in self.enemies:\n                if enemy.alive and enemy.first_char_matches(ch):\n                    self.locked = enemy\n                    enemy.set_locked(True)\n                    enemy.try_type(ch)\n                    self._fire_bullet()\n                    if enemy.is_done():\n                        self._kill_enemy(enemy)\n                        self.locked = None\n                    break\n        else:\n            if not self.locked.alive:\n                self.locked = None\n                return\n            hit = self.locked.try_type(ch)\n            if hit:\n                self._fire_bullet()\n                if self.locked.is_done():\n                    self._kill_enemy(self.locked)\n                    self.locked = None\n            else:\n                self._break_combo()\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  暫停  ── 新增\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _toggle_pause(self):\n        if self.game_over:\n            return\n        self._paused = not self._paused\n        if self._paused:\n            # 顯示暫停文字\n            self._pause_overlay = self.canvas.create_rectangle(\n                150, 290, CANVAS_W - 150, 380,\n                fill="#05050F", outline="#3355AA", width=2\n            )\n            self._pause_text = self.canvas.create_text(\n                CANVAS_W // 2, 335,\n                text="⏸  PAUSED  ( ESC 繼續 )",\n                fill="#88AAFF",\n                font=("Courier", 18, "bold"),\n            )\n        else:\n            self.canvas.delete(self._pause_overlay)\n            self.canvas.delete(self._pause_text)\n            # 恢復迴圈\n            self.root.after(FPS_MS, self._game_loop)\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  子彈\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _fire_bullet(self):\n        sx = float(self._px)\n        sy = float(self._py - 38)\n        if self.locked and self.locked.alive:\n            tx, ty = self.locked.x, self.locked.y\n        else:\n            tx, ty = sx, sy - 500.0\n        b = Bullet(self.canvas, sx, sy, tx, ty)\n        self.bullets.append(b)\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  碰撞偵測  ── 新增\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _check_bullet_collisions(self):\n        """\n        遍歷所有子彈與敵機，以 AABB（軸對齊包圍盒）判定碰撞。\n        子彈的視覺半徑為 3px；碰撞時：\n          - 子彈銷毀\n          - 若為鎖定目標：正常繼續輸入邏輯（不強制摧毀）\n          - 若為非鎖定目標：產生爆炸但不消滅（保留打字機制）\n        """\n        for bullet in self.bullets:\n            if not bullet.alive:\n                continue\n            bx, by = bullet.x, bullet.y\n            for enemy in self.enemies:\n                if not enemy.alive:\n                    continue\n                x1, y1, x2, y2 = enemy.get_bbox()\n                # 子彈點是否在敵機矩形內（加 3px 容差）\n                if x1 - 3 <= bx <= x2 + 3 and y1 - 3 <= by <= y2 + 3:\n                    bullet.destroy()\n                    # 擊中時產生小型爆炸火花\n                    Explosion(self.canvas, bx, by, self.root, count=6)\n                    break   # 一顆子彈只碰一個敵機\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  敵機摧毀與計分\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _kill_enemy(self, enemy: Enemy):\n        self.combo    += 1\n        self.max_combo = max(self.max_combo, self.combo)\n\n        multiplier = self.combo // 4 + 1\n        pts        = len(enemy.word) * 10 * multiplier\n        self.score += pts\n        self._score_var.set(f"{self.score:,}")\n\n        self._combo_var.set(f"×{self.combo}")\n        if self.combo >= 12:\n            self._combo_lbl.config(fg="#FF3333")\n        elif self.combo >= 6:\n            self._combo_lbl.config(fg="#FF8800")\n        else:\n            self._combo_lbl.config(fg="#FFEE44")\n\n        # 擊毀時大型爆炸  ── 新增\n        Explosion(self.canvas, enemy.x, enemy.y, self.root, count=16)\n\n        self._popup(enemy.x, enemy.y, f"+{pts}")\n\n        # 從已存在單字集合中移除  ── 改善\n        self._active_words.discard(enemy.word.lower())\n\n        enemy.destroy()\n        self.enemies = [e for e in self.enemies if e.alive]\n\n        # 檢查是否升級難度  ── 新增\n        self._check_difficulty()\n\n    def _popup(self, x: float, y: float, text: str):\n        tid = self.canvas.create_text(\n            x, y, text=text,\n            fill="#FFE033",\n            font=("Courier", 13, "bold"),\n        )\n        self._animate_popup(tid, 18)\n\n    def _animate_popup(self, tid: int, frames_left: int):\n        if frames_left <= 0:\n            self.canvas.delete(tid)\n            return\n        self.canvas.move(tid, 0, -2)\n        self.root.after(35, lambda: self._animate_popup(tid, frames_left - 1))\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  難度系統  ── 新增\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _check_difficulty(self):\n        """\n        每累積 DIFF_SCORE_STEP 分，難度提升一級：\n          - 敵機移動速度增加 DIFF_SPEED_INC\n          - 敵機生成間隔縮短 DIFF_SPAWN_DEC（下限 DIFF_SPAWN_MIN）\n        """\n        new_level = min(self.score // DIFF_SCORE_STEP, DIFF_MAX_LEVEL)\n        if new_level > self._diff_level:\n            self._diff_level    = new_level\n            self._current_speed = ENEMY_SPEED + new_level * DIFF_SPEED_INC\n            self._current_spawn = max(\n                DIFF_SPAWN_MIN,\n                SPAWN_MS - new_level * DIFF_SPAWN_DEC\n            )\n            self._lv_var.set(str(new_level + 1))\n            self._show_wave_text(f"LEVEL  {new_level + 1}")\n\n    def _show_wave_text(self, text: str):\n        """在 Canvas 中央短暫顯示關卡提示文字。"""\n        if self._wave_tid is not None:\n            self.canvas.delete(self._wave_tid)\n        self._wave_tid = self.canvas.create_text(\n            CANVAS_W // 2, CANVAS_H // 2 - 60,\n            text=text,\n            fill="#44AAFF",\n            font=("Courier", 26, "bold"),\n        )\n        self.root.after(1800, self._clear_wave_text)\n\n    def _clear_wave_text(self):\n        if self._wave_tid is not None:\n            self.canvas.delete(self._wave_tid)\n            self._wave_tid = None\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  Combo 管理\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _break_combo(self):\n        self.combo = 0\n        self._combo_var.set("×0")\n        self._combo_lbl.config(fg="#FFEE44")\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  HP 管理\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _take_damage(self, dmg: int):\n        self.hp = max(0, self.hp - dmg)\n        self._hp_var.set(self.hp)\n\n        ratio = self.hp / MAX_HP\n        if ratio <= 0.25:\n            self._configure_hp_style("#DD2211")\n        elif ratio <= 0.55:\n            self._configure_hp_style("#FF9900")\n        else:\n            self._configure_hp_style("#22DD66")\n\n        # 受傷畫面紅色閃爍  ── 新增\n        self._flash_damage()\n\n        if self.hp <= 0:\n            self._end_game()\n\n    def _flash_damage(self):\n        """\n        Canvas 背景短暫變紅再恢復，提供受傷視覺回饋。\n        使用 after() 排程，連續受傷時取消前一次閃爍避免堆疊。\n        """\n        # 取消前一個閃爍排程（若存在）\n        if self._flash_id is not None:\n            self.root.after_cancel(self._flash_id)\n\n        self.canvas.configure(bg="#300808")    # 變紅\n        self._flash_id = self.root.after(\n            200,\n            lambda: self.canvas.configure(bg="#080820")  # 恢復深藍\n        )\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  敵機生成\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _spawn_enemy(self):\n        if self.game_over:\n            return\n        if not self._paused and len(self.enemies) < MAX_ENEMIES:\n            # 改善：從未在畫面上的單字中選取，避免重複\n            available = [w for w in WORDS if w.lower() not in self._active_words]\n            if not available:\n                available = WORDS   # 萬一全用完（不太可能），允許重複\n            word   = random.choice(available)\n            self._active_words.add(word.lower())\n\n            margin = 70\n            x      = random.randint(margin, CANVAS_W - margin)\n            enemy  = Enemy(self.canvas, word, x)\n            enemy.speed = self._current_speed   # 套用當前難度速度\n            self.enemies.append(enemy)\n\n        self.root.after(self._current_spawn, self._spawn_enemy)\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  主遊戲迴圈\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _game_loop(self):\n        if self.game_over or self._paused:\n            return\n\n        # 更新敵機\n        dead_enemies = []\n        for enemy in self.enemies:\n            if not enemy.alive:\n                dead_enemies.append(enemy)\n                continue\n            enemy.move_down()\n            if enemy.y >= CANVAS_H - 65:\n                if self.locked is enemy:\n                    self.locked = None\n                self._active_words.discard(enemy.word.lower())   # 改善：清除紀錄\n                # 抵達底部時也觸發爆炸（小型）\n                Explosion(self.canvas, enemy.x, enemy.y - 20, self.root, count=8)\n                self._take_damage(DAMAGE)\n                self._break_combo()\n                enemy.destroy()\n                dead_enemies.append(enemy)\n\n        self.enemies = [e for e in self.enemies\n                        if e not in dead_enemies and e.alive]\n\n        # 更新子彈\n        for bullet in self.bullets:\n            if bullet.alive:\n                bullet.move()\n        self.bullets = [b for b in self.bullets if b.alive]\n\n        # 碰撞偵測  ── 新增\n        self._check_bullet_collisions()\n\n        self.root.after(FPS_MS, self._game_loop)\n\n    # ══════════════════════════════════════════════════════════════════════════\n    #  遊戲結束與重玩\n    # ══════════════════════════════════════════════════════════════════════════\n\n    def _end_game(self):\n        self.game_over = True\n        cx = CANVAS_W // 2\n\n        self.canvas.create_rectangle(\n            70, 180, CANVAS_W - 70, 520,\n            fill="#05050F", outline="#CC2222", width=3\n        )\n        self.canvas.create_text(\n            cx, 250, text="GAME OVER",\n            fill="#FF2222", font=("Courier", 40, "bold"),\n        )\n        self.canvas.create_text(\n            cx, 320, text=f"SCORE    {self.score:,}",\n            fill="#FFFFFF", font=("Courier", 18, "bold"),\n        )\n        self.canvas.create_text(\n            cx, 365, text=f"MAX COMBO   ×{self.max_combo}",\n            fill="#FFEE44", font=("Courier", 14),\n        )\n        self.canvas.create_text(\n            cx, 400, text=f"最高難度等級   LV {self._diff_level + 1}",\n            fill="#88CCFF", font=("Courier", 13),\n        )\n\n        # 重玩按鈕  ── 新增（改善：不需關閉視窗）\n        restart_btn = tk.Button(\n            self.canvas,\n            text="▶  再來一局",\n            bg="#112233", fg="#AADDFF",\n            font=("Courier", 14, "bold"),\n            activebackground="#1E4466",\n            activeforeground="#FFFFFF",\n            relief=tk.FLAT,\n            padx=20, pady=8,\n            command=self._restart,\n        )\n        self.canvas.create_window(cx, 460, window=restart_btn)\n\n    def _restart(self):\n        """清除 Canvas 所有元素並重新開始遊戲。"""\n        self.canvas.delete("all")\n        self._reset_state()\n        self._configure_hp_style("#22DD66")\n        self._score_var.set("0")\n        self._combo_var.set("×0")\n        self._combo_lbl.config(fg="#FFEE44")\n        self._lv_var.set("1")\n        self._hp_var.set(MAX_HP)\n        self._draw_starfield()\n        self.canvas.create_line(\n            0, CANVAS_H - 65, CANVAS_W, CANVAS_H - 65,\n            fill="#151530", width=1, dash=(5, 5)\n        )\n        self._draw_player()\n        self.root.after(800,    self._spawn_enemy)\n        self.root.after(FPS_MS, self._game_loop)\n\n\n# ══════════════════════════════════════════════════════════════════════════════\n#  程式進入點\n# ══════════════════════════════════════════════════════════════════════════════\n\ndef main():\n    root = tk.Tk()\n    root.title("⚡ 雷霆打字戰機  Thunder Typer  改善版 ⚡")\n    root.resizable(False, False)\n    Game(root)\n    root.mainloop()\n\n\nif __name__ == "__main__":\n    main()\n
+"""thunder_typer_v2.py
+=========================
+雷霆打字戰機 V2 — 期末改善版
+
+改善項目（相較 V1）：
+  1.  滾動視差星空（3 層速率不同的星星）
+  2.  Boss 敵機（字母 ≥7、紅色大型、撞底扣雙倍血）
+  3.  連擊特效文字（GOOD / GREAT / EXCELLENT / GODLIKE）
+  4.  打字光束追蹤特效（子彈用貝茲曲線閃光取代單點橢圓）
+  5.  完整 _restart() 狀態重置（修正 _flash_id / _wave_tid 洩漏）
+  6.  locked 敵機死亡時安全解鎖，不產生空指針
+  7.  HP 低於 30% 時背景持續脈動紅色警告
+  8.  高分排行榜（本次遊戲前三名，儲存於記憶體）
+  9.  Combo 斷掉時短暫顯示「MISS!」提示
+  10. 敵機依字母長度染色（難度視覺化）
+"""
+
+import tkinter as tk
+from tkinter import ttk
+import random
+import math
+import string
+
+# ════════════════════════════════════════════════
+#  全域常數
+# ════════════════════════════════════════════════
+
+CANVAS_W      = 680
+CANVAS_H      = 720
+FPS_MS        = 33           # ~30 FPS
+ENEMY_SPEED   = 0.85
+SPAWN_MS      = 2600
+MAX_ENEMIES   = 9
+BULLET_SPEED  = 16
+MAX_HP        = 100
+DAMAGE        = 20
+DAMAGE_BOSS   = 35
+CHAR_W        = 8
+
+DIFF_SCORE_STEP  = 300
+DIFF_SPEED_INC   = 0.14
+DIFF_SPAWN_DEC   = 200
+DIFF_SPAWN_MIN   = 800
+DIFF_MAX_LEVEL   = 10
+
+BOSS_PROB        = 0.15      # 每次生成有此機率為 Boss
+BOSS_MIN_LEN     = 7        # Boss 單字最短長度
+
+# 星空層數（速率由慢到快）
+STAR_LAYERS = [
+    {"count": 60,  "speed": 0.15, "color": "#10103A", "r": 1},
+    {"count": 40,  "speed": 0.35, "color": "#1A1A55", "r": 1},
+    {"count": 20,  "speed": 0.65, "color": "#2A2A80", "r": 2},
+]
+
+COMBO_TEXTS = [
+    (4,  "GOOD!",      "#88FF88"),
+    (8,  "GREAT!",     "#FFDD00"),
+    (12, "EXCELLENT!", "#FF8800"),
+    (20, "GODLIKE!",   "#FF3399"),
+]
+
+WORDS = list(set([
+    # 4 字母
+    "able","acid","aged","also","apex","arch","army","atom",
+    "back","barn","beam","bird","blue","bold","bond","bred",
+    "cage","calm","cave","chin","chip","claw","clay","clue",
+    "damp","dare","dark","data","dawn","deal","deck","dome",
+    "echo","edge","emit","epic","even","evil","exam","exit",
+    # 5 字母
+    "alpha","blaze","brave","brick","cable","chase","chord",
+    "clash","cloud","cobra","coral","crane","crisp","crown",
+    "delta","depth","digit","disco","draft","drain","drift",
+    "eagle","early","earth","eight","elite","ember","epoch",
+    "fable","faith","fault","feast","fever","fifth","fixed",
+    "flame","flash","flint","flood","flora","focus","force",
+    "frost","globe","grace","grade","grain","grand","grant",
+    "grave","graze","greed","green","greet","grind","guard",
+    "hazel","heavy","heist","helix","honor","horse","hover",
+    "humid","haste","hyper","ideal","index","indie","infer",
+    "ivory","jewel","joint","joker","judge","juice","karma",
+    "laser","layer","learn","level","light","limit","logic",
+    "lunar","magic","maple","march","marsh","match","merge",
+    "metal","might","mimic","minor","model","motor","nexus",
+    "night","ninja","noble","noise","north","novel","nymph",
+    "oasis","ocean","orbit","other","outer","oxide","panel",
+    "paper","patch","pause","pearl","phase","pilot","pixel",
+    "polar","power","press","prism","probe","prone","proxy",
+    "pulse","quest","quick","quiet","quota","radar","rally",
+    "range","rapid","ratio","razor","reach","realm","relay",
+    "relic","remix","renew","repel","reset","ridge","risky",
+    "rival","river","robot","rocky","rouge","round","route",
+    "royal","sabre","scale","scope","scout","seize","sigma",
+    "skate","skill","slice","slide","slope","smoke","snake",
+    "solar","solid","solve","sonar","sound","south","spark",
+    "spawn","speed","spell","spend","spire","sport","spray",
+    "squad","stack","staff","stage","stake","stamp","stand",
+    "stark","start","state","steal","steel","stern","stick",
+    "sting","stock","stomp","stone","store","storm","story",
+    "strap","straw","strip","stuck","study","style","surge",
+    "swamp","swarm","sweep","swift","sword","swirl","tango",
+    "taunt","tempo","tense","tiger","tight","timer","titan",
+    "token","topaz","torch","total","tower","trace","track",
+    "trade","trail","train","trait","triad","tribe","trick",
+    "troop","trove","truce","truly","trunk","trust","truth",
+    "turbo","tweak","twist","ultra","unity","upper","usher",
+    "valor","valve","vault","venom","viral","virus","visor",
+    "vista","vital","waves","weave","wedge","whirl","wield",
+    "xenon","yacht","yield","young","zoned","zesty","zebra",
+    # 6 字母
+    "battle","castle","circle","combat","danger","empire",
+    "energy","engine","falcon","flight","forest","frozen",
+    "galaxy","gamble","garden","golden","hunter","jungle",
+    "legend","matrix","mirror","mystic","nature","nebula",
+    "nether","palace","planet","plasma","python","rafter",
+    "random","reborn","rescue","rocket","rumble","savage",
+    "scroll","server","shadow","signal","simple","spider",
+    "spirit","static","stream","strike","strobe","strong",
+    "studio","system","target","temple","throne","toggle",
+    "travel","tundra","turret","vector","vertex","vortex",
+    "warden","weapon","window","winter","wizard","wonder",
+    # 7 字母（Boss 專用）
+    "banquet","caption","cavalry","channel","chapter","circuit",
+    "cluster","command","concept","control","courage","crystal",
+    "destiny","diamond","discord","dragon","eclipse","element",
+    "enhance","eternal","explain","fantasy","fission","fortune",
+    "freedom","gateway","genesis","gravity","horizon","impulse",
+    "justice","kingdom","lantern","machine","network","observe",
+    "phantom","process","quantum","reactor","reflect","refresh",
+    "release","remnant","replace","request","reserve","restore",
+    "revenue","reverse","revival","resolve","shatter","silence",
+    "skyline","slander","society","soldier","sorcery","stellar",
+    "subject","sublime","supreme","survive","thunder","torment",
+    "trigger","typhoon","vampire","voltage","witness","warrior",
+]))
+
+BOSS_WORDS  = [w for w in WORDS if len(w) >= BOSS_MIN_LEN]
+NORMAL_WORDS = [w for w in WORDS if len(w) < BOSS_MIN_LEN]
+
+
+# ════════════════════════════════════════════════
+#  Explosion 爆炸粒子
+# ════════════════════════════════════════════════
+
+class Explosion:
+    _COLORS = ["#FFFFFF","#FFEE88","#FFAA33","#FF6600","#CC3300","#882200"]
+
+    def __init__(self, canvas, x, y, root, count=12, big=False):
+        self.canvas = canvas
+        self.root   = root
+        self._items = []
+        self._vels  = []
+        self._life  = len(self._COLORS)
+        speed_max   = 6.5 if big else 4.5
+        r_max       = 5   if big else 4
+
+        for i in range(count):
+            angle = (2*math.pi/count)*i + random.uniform(-0.4, 0.4)
+            spd   = random.uniform(1.5, speed_max)
+            vx    = math.cos(angle)*spd
+            vy    = math.sin(angle)*spd
+            r     = random.randint(2, r_max)
+            oval  = canvas.create_oval(
+                x-r, y-r, x+r, y+r,
+                fill=self._COLORS[0], outline="")
+            self._items.append(oval)
+            self._vels.append((vx, vy))
+
+        self._animate()
+
+    def _animate(self):
+        if self._life <= 0:
+            for o in self._items:
+                self.canvas.delete(o)
+            return
+        color = self._COLORS[len(self._COLORS)-self._life]
+        for i, o in enumerate(self._items):
+            vx, vy = self._vels[i]
+            self.canvas.move(o, vx, vy)
+            self.canvas.itemconfig(o, fill=color)
+        self._life -= 1
+        self.root.after(38, self._animate)
+
+
+# ════════════════════════════════════════════════
+#  StarField  滾動視差星空
+# ════════════════════════════════════════════════
+
+class StarField:
+    """三層視差滾動星空。每幀由 Game._game_loop 呼叫 update()。"""
+
+    def __init__(self, canvas, w, h):
+        self.canvas = canvas
+        self.W = w
+        self.H = h
+        self._stars = []   # list of (oval_id, speed, y_pos)
+        self._build()
+
+    def _build(self):
+        for layer in STAR_LAYERS:
+            for _ in range(layer["count"]):
+                x = random.randint(0, self.W)
+                y = random.randint(0, self.H)
+                r = layer["r"]
+                oid = self.canvas.create_oval(
+                    x-r, y-r, x+r, y+r,
+                    fill=layer["color"], outline=""
+                )
+                self._stars.append({"id": oid, "speed": layer["speed"],
+                                    "r": r, "color": layer["color"]})
+                # 把座標記錄在 dict（不用 coords 查詢，快一點）
+                self._stars[-1]["x"] = float(x)
+                self._stars[-1]["y"] = float(y)
+
+    def update(self):
+        for s in self._stars:
+            s["y"] += s["speed"]
+            if s["y"] > self.H:
+                # 移到頂端，x 隨機
+                nx = random.randint(0, self.W)
+                self.canvas.coords(s["id"],
+                    nx-s["r"], 0, nx+s["r"], s["r"]*2)
+                s["x"] = float(nx)
+                s["y"] = 0.0
+            else:
+                self.canvas.move(s["id"], 0, s["speed"])
+
+    def destroy(self):
+        for s in self._stars:
+            self.canvas.delete(s["id"])
+        self._stars.clear()
+
+
+# ════════════════════════════════════════════════
+#  Enemy 敵機
+# ════════════════════════════════════════════════
+
+class Enemy:
+    # 依字母長度選色（越長越紅/越亮）
+    _LEN_COLORS = [
+        (4, "#1A5A8A", "#4499CC"),   # 短：藍
+        (5, "#3A6A2A", "#66AA44"),   # 中：綠
+        (6, "#7A5A10", "#FFAA22"),   # 中長：橙
+    ]
+    _BOSS_FILL    = "#6A0000"
+    _BOSS_OUTLINE = "#FF2222"
+    COLOR_LOCKED  = "#FFFF00"
+    COLOR_TYPED   = "#FFE033"
+    COLOR_REMAIN  = "#E8E8E8"
+
+    def __init__(self, canvas, word, x, is_boss=False):
+        self.canvas  = canvas
+        self.word    = word
+        self.typed   = 0
+        self.x       = float(x)
+        self.y       = 18.0
+        self.alive   = True
+        self.speed   = ENEMY_SPEED
+        self.is_boss = is_boss
+
+        wlen = len(word)
+        self._hw = max(wlen*5+22, 44)
+        self._hh = 16 if not is_boss else 20
+        self._txt_start_x = x - wlen*CHAR_W/2
+        self._txt_y       = self.y - self._hh - 14
+
+        if is_boss:
+            fill, outline, width = self._BOSS_FILL, self._BOSS_OUTLINE, 3
+        else:
+            fill, outline, width = self._pick_colors(wlen)
+
+        self._rect = canvas.create_rectangle(
+            x-self._hw, self.y-self._hh,
+            x+self._hw, self.y+self._hh,
+            fill=fill, outline=outline, width=width)
+
+        # Boss 頭頂加「BOSS」標籤
+        self._boss_tag = None
+        if is_boss:
+            self._boss_tag = canvas.create_text(
+                x, self.y-self._hh-28,
+                text="◆ BOSS",
+                fill="#FF4444",
+                font=("Courier", 9, "bold"))
+
+        self._typed_txt = canvas.create_text(
+            self._txt_start_x, self._txt_y,
+            text="", fill=self.COLOR_TYPED,
+            font=("Courier", 11, "bold"), anchor="w")
+        self._remain_txt = canvas.create_text(
+            self._txt_start_x, self._txt_y,
+            text=word, fill=self.COLOR_REMAIN,
+            font=("Courier", 11, "bold"), anchor="w")
+
+    @classmethod
+    def _pick_colors(cls, wlen):
+        for min_len, fill, outline in cls._LEN_COLORS:
+            if wlen <= min_len:
+                return fill, outline, 2
+        return "#5A1A3A", "#CC44AA", 2   # 7+ 字母普通（不應觸發，Boss 另行處理）
+
+    def _refresh_text(self):
+        typed_str  = self.word[:self.typed]
+        remain_str = self.word[self.typed:]
+        remain_x   = self._txt_start_x + self.typed*CHAR_W
+        self.canvas.itemconfig(self._typed_txt,  text=typed_str)
+        self.canvas.itemconfig(self._remain_txt, text=remain_str)
+        self.canvas.coords(self._remain_txt, remain_x, self._txt_y)
+
+    def move_down(self):
+        self.y      += self.speed
+        self._txt_y += self.speed
+        self.canvas.move(self._rect,       0, self.speed)
+        self.canvas.move(self._typed_txt,  0, self.speed)
+        self.canvas.move(self._remain_txt, 0, self.speed)
+        if self._boss_tag:
+            self.canvas.move(self._boss_tag, 0, self.speed)
+
+    def try_type(self, char):
+        if self.typed < len(self.word) and self.word[self.typed] == char:
+            self.typed += 1
+            self._refresh_text()
+            return True
+        return False
+
+    def is_done(self):
+        return self.typed == len(self.word)
+
+    def first_char_matches(self, char):
+        return self.typed == 0 and bool(self.word) and self.word[0] == char
+
+    def set_locked(self, locked):
+        if locked:
+            self.canvas.itemconfig(self._rect, outline=self.COLOR_LOCKED, width=3)
+        else:
+            fill, outline, w = self._pick_colors(len(self.word))
+            if self.is_boss:
+                outline, w = self._BOSS_OUTLINE, 3
+            self.canvas.itemconfig(self._rect, outline=outline, width=w)
+
+    def get_bbox(self):
+        return (self.x-self._hw, self.y-self._hh,
+                self.x+self._hw, self.y+self._hh)
+
+    def destroy(self):
+        self.canvas.delete(self._rect)
+        self.canvas.delete(self._typed_txt)
+        self.canvas.delete(self._remain_txt)
+        if self._boss_tag:
+            self.canvas.delete(self._boss_tag)
+        self.alive = False
+
+
+# ════════════════════════════════════════════════
+#  Bullet 子彈（帶光暈尾跡）
+# ════════════════════════════════════════════════
+
+class Bullet:
+    def __init__(self, canvas, sx, sy, tx, ty):
+        self.canvas = canvas
+        self.x      = float(sx)
+        self.y      = float(sy)
+        self.alive  = True
+
+        dx   = tx - sx
+        dy   = ty - sy
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            self._vx, self._vy = 0.0, -1.0
+        else:
+            self._vx = (dx/dist)*BULLET_SPEED
+            self._vy = (dy/dist)*BULLET_SPEED
+
+        # 主彈頭
+        self._oval = canvas.create_oval(
+            sx-3, sy-5, sx+3, sy+5,
+            fill="#00FFCC", outline="")
+        # 光暈（較大、半透明白）
+        self._glow = canvas.create_oval(
+            sx-5, sy-7, sx+5, sy+7,
+            fill="", outline="#44FFEE", width=1)
+
+    def move(self):
+        self.x += self._vx
+        self.y += self._vy
+        self.canvas.move(self._oval, self._vx, self._vy)
+        self.canvas.move(self._glow, self._vx, self._vy)
+        if (self.y < 0 or self.y > CANVAS_H or
+                self.x < 0 or self.x > CANVAS_W):
+            self.destroy()
+
+    def destroy(self):
+        self.canvas.delete(self._oval)
+        self.canvas.delete(self._glow)
+        self.alive = False
+
+
+# ════════════════════════════════════════════════
+#  Game 主控制器
+# ════════════════════════════════════════════════
+
+class Game:
+
+    def __init__(self, root):
+        self.root = root
+        self._hp_style = ttk.Style()
+        self._hp_style.theme_use("clam")
+        self._configure_hp_style("#22DD66")
+        self._high_scores = []          # 本次程式執行的排行（前 3）
+        self._reset_state()
+        self._build_ui()
+        self._draw_player()
+        self._bind_keys()
+        self.root.after(900,    self._spawn_enemy)
+        self.root.after(FPS_MS, self._game_loop)
+
+    # ─── 狀態重置 ───────────────────────────────
+    def _reset_state(self):
+        self.score          = 0
+        self.combo          = 0
+        self.max_combo      = 0
+        self.hp             = MAX_HP
+        self.game_over      = False
+        self._paused        = False
+        self._diff_level    = 0
+        self._current_speed = ENEMY_SPEED
+        self._current_spawn = SPAWN_MS
+        self.enemies        = []
+        self.bullets        = []
+        self.locked         = None
+        self._px            = CANVAS_W // 2
+        self._py            = CANVAS_H - 40
+        self._active_words  = set()
+        self._wave_tid      = None      # 修正：確保重置
+        self._flash_id      = None      # 修正：確保重置
+        self._danger_pulsing = False
+        self._danger_phase   = 0
+        self._starfield     = None
+
+    # ─── UI 建構 ────────────────────────────────
+    def _build_ui(self):
+        self.root.configure(bg="#07071A")
+
+        top = tk.Frame(self.root, bg="#07071A")
+        top.pack(fill=tk.X, padx=14, pady=(8,3))
+
+        def lbl(parent, text, fg):
+            tk.Label(parent, text=text,
+                     bg="#07071A", fg=fg,
+                     font=("Courier", 8, "bold")).pack(side=tk.LEFT)
+
+        lbl(top, "SCORE", "#445566")
+        self._score_var = tk.StringVar(value="0")
+        tk.Label(top, textvariable=self._score_var,
+                 bg="#07071A", fg="#FFFFFF",
+                 font=("Courier",14,"bold"),
+                 width=9, anchor="w").pack(side=tk.LEFT, padx=(3,16))
+
+        lbl(top, "LV", "#445566")
+        self._lv_var = tk.StringVar(value="1")
+        tk.Label(top, textvariable=self._lv_var,
+                 bg="#07071A", fg="#88CCFF",
+                 font=("Courier",14,"bold"),
+                 width=3, anchor="w").pack(side=tk.LEFT, padx=(3,16))
+
+        lbl(top, "COMBO", "#445566")
+        self._combo_var = tk.StringVar(value="×0")
+        self._combo_lbl = tk.Label(top, textvariable=self._combo_var,
+                                   bg="#07071A", fg="#FFEE44",
+                                   font=("Courier",14,"bold"),
+                                   width=6, anchor="w")
+        self._combo_lbl.pack(side=tk.LEFT, padx=(3,0))
+
+        hp_f = tk.Frame(top, bg="#07071A")
+        hp_f.pack(side=tk.RIGHT)
+        lbl(hp_f, "HP", "#445566")
+        self._hp_var = tk.IntVar(value=MAX_HP)
+        self._hp_bar = ttk.Progressbar(
+            hp_f, variable=self._hp_var, maximum=MAX_HP,
+            length=180, style="hp.Horizontal.TProgressbar",
+            mode="determinate")
+        self._hp_bar.pack(side=tk.LEFT, padx=(5,0))
+
+        # Canvas
+        self.canvas = tk.Canvas(
+            self.root, width=CANVAS_W, height=CANVAS_H,
+            bg="#080820", highlightthickness=1,
+            highlightbackground="#1A2A40")
+        self.canvas.pack(padx=14, pady=(2,2))
+
+        # 滾動星空
+        self._starfield = StarField(self.canvas, CANVAS_W, CANVAS_H)
+
+        self.canvas.create_line(
+            0, CANVAS_H-65, CANVAS_W, CANVAS_H-65,
+            fill="#151530", width=1, dash=(5,5))
+
+        self._hint_lbl = tk.Label(
+            self.root,
+            text="首字母鎖定（黃框）→ 打完整單字→擊毀！  錯字=Combo歸零  ESC=暫停",
+            bg="#07071A", fg="#2A3A4A",
+            font=("Courier", 8))
+        self._hint_lbl.pack(pady=(0,7))
+
+    def _configure_hp_style(self, color):
+        self._hp_style.configure(
+            "hp.Horizontal.TProgressbar",
+            troughcolor="#111128", background=color,
+            bordercolor="#223344", lightcolor=color, darkcolor=color)
+
+    # ─── 玩家戰機 ──────────────────────────────
+    def _draw_player(self):
+        cx, cy = self._px, self._py
+        c = self.canvas
+        c.create_polygon(cx-8,cy+20, cx,cy+36, cx+8,cy+20,
+                         fill="#FF6600", outline="", tags="player")
+        c.create_polygon(cx-4,cy+20, cx,cy+28, cx+4,cy+20,
+                         fill="#FFCC00", outline="", tags="player")
+        c.create_polygon(cx-14,cy-6, cx-40,cy+20, cx-14,cy+20,
+                         fill="#0A5588", outline="", tags="player")
+        c.create_polygon(cx+14,cy-6, cx+40,cy+20, cx+14,cy+20,
+                         fill="#0A5588", outline="", tags="player")
+        c.create_rectangle(cx-13,cy-24, cx+13,cy+20,
+                           fill="#1177CC", outline="#44AAFF", width=2,
+                           tags="player")
+        c.create_rectangle(cx-4,cy-38, cx+4,cy-24,
+                           fill="#33CCFF", outline="", tags="player")
+        c.create_oval(cx-5,cy-44, cx+5,cy-36,
+                      fill="#88EEFF", outline="", tags="player")
+        c.create_oval(cx-8,cy-18, cx+8,cy-4,
+                      fill="#88DDFF", outline="#AAEEFF", tags="player")
+        c.create_oval(cx-42,cy+18, cx-38,cy+22,
+                      fill="#FF3333", outline="", tags="player")
+        c.create_oval(cx+38,cy+18, cx+42,cy+22,
+                      fill="#FF3333", outline="", tags="player")
+
+    # ─── 鍵盤 ──────────────────────────────────
+    def _bind_keys(self):
+        self.root.bind("<KeyPress>", self._on_key)
+
+    def _on_key(self, event):
+        if event.keysym == "Escape":
+            self._toggle_pause()
+            return
+        if self.game_over or self._paused:
+            return
+        ch = event.char.lower()
+        if ch not in string.ascii_lowercase:
+            return
+
+        if self.locked is None:
+            for enemy in self.enemies:
+                if enemy.alive and enemy.first_char_matches(ch):
+                    self.locked = enemy
+                    enemy.set_locked(True)
+                    enemy.try_type(ch)
+                    self._fire_bullet()
+                    if enemy.is_done():
+                        self._kill_enemy(enemy)
+                        self.locked = None
+                    break
+        else:
+            # 修正：locked 敵機可能已被摧毀
+            if not self.locked.alive:
+                self.locked = None
+                return
+            hit = self.locked.try_type(ch)
+            if hit:
+                self._fire_bullet()
+                if self.locked.is_done():
+                    self._kill_enemy(self.locked)
+                    self.locked = None
+            else:
+                self._break_combo()
+                self._show_miss()
+
+    # ─── 暫停 ──────────────────────────────────
+    def _toggle_pause(self):
+        if self.game_over:
+            return
+        self._paused = not self._paused
+        if self._paused:
+            self._pause_bg = self.canvas.create_rectangle(
+                150, 295, CANVAS_W-150, 385,
+                fill="#05050F", outline="#3355AA", width=2)
+            self._pause_txt = self.canvas.create_text(
+                CANVAS_W//2, 340,
+                text="⏸  PAUSED  ( ESC 繼續 )",
+                fill="#88AAFF", font=("Courier",18,"bold"))
+        else:
+            self.canvas.delete(self._pause_bg)
+            self.canvas.delete(self._pause_txt)
+            self.root.after(FPS_MS, self._game_loop)
+
+    # ─── 子彈 ──────────────────────────────────
+    def _fire_bullet(self):
+        sx = float(self._px)
+        sy = float(self._py - 40)
+        if self.locked and self.locked.alive:
+            tx, ty = self.locked.x, self.locked.y
+        else:
+            tx, ty = sx, sy - 500.0
+        self.bullets.append(Bullet(self.canvas, sx, sy, tx, ty))
+
+    # ─── 碰撞偵測 ──────────────────────────────
+    def _check_bullet_collisions(self):
+        for bullet in self.bullets:
+            if not bullet.alive:
+                continue
+            bx, by = bullet.x, bullet.y
+            for enemy in self.enemies:
+                if not enemy.alive:
+                    continue
+                x1,y1,x2,y2 = enemy.get_bbox()
+                if x1-3 <= bx <= x2+3 and y1-3 <= by <= y2+3:
+                    bullet.destroy()
+                    Explosion(self.canvas, bx, by, self.root, count=5)
+                    break
+
+    # ─── 擊殺與計分 ────────────────────────────
+    def _kill_enemy(self, enemy):
+        self.combo    += 1
+        self.max_combo = max(self.max_combo, self.combo)
+
+        multiplier = self.combo//4 + 1
+        pts        = len(enemy.word)*10*multiplier
+        self.score += pts
+        self._score_var.set(f"{self.score:,}")
+
+        self._combo_var.set(f"×{self.combo}")
+        if self.combo >= 20:
+            self._combo_lbl.config(fg="#FF3399")
+        elif self.combo >= 12:
+            self._combo_lbl.config(fg="#FF3333")
+        elif self.combo >= 6:
+            self._combo_lbl.config(fg="#FF8800")
+        else:
+            self._combo_lbl.config(fg="#FFEE44")
+
+        # 大型爆炸（Boss 更大）
+        Explosion(self.canvas, enemy.x, enemy.y, self.root,
+                  count=20 if enemy.is_boss else 16,
+                  big=enemy.is_boss)
+
+        self._popup(enemy.x, enemy.y, f"+{pts}")
+
+        # 連擊特效文字
+        for threshold, text, color in sorted(COMBO_TEXTS, key=lambda t: t[0], reverse=True):
+            if self.combo >= threshold:
+                self._combo_popup(text, color)
+                break
+
+        self._active_words.discard(enemy.word.lower())
+        enemy.destroy()
+        self.enemies = [e for e in self.enemies if e.alive]
+        self._check_difficulty()
+
+    def _popup(self, x, y, text):
+        tid = self.canvas.create_text(
+            x, y, text=text,
+            fill="#FFE033", font=("Courier",13,"bold"))
+        self._animate_popup(tid, 18)
+
+    def _animate_popup(self, tid, n):
+        if n <= 0:
+            self.canvas.delete(tid)
+            return
+        self.canvas.move(tid, 0, -2)
+        self.root.after(35, lambda: self._animate_popup(tid, n-1))
+
+    def _combo_popup(self, text, color):
+        """在畫面中央偏上顯示連擊特效文字。"""
+        cx = CANVAS_W//2
+        tid = self.canvas.create_text(
+            cx, CANVAS_H//2,
+            text=text, fill=color,
+            font=("Courier",24,"bold"))
+        self._animate_popup(tid, 22)
+
+    def _show_miss(self):
+        """Combo 斷掉時顯示 MISS!。"""
+        cx = CANVAS_W//2
+        tid = self.canvas.create_text(
+            cx, CANVAS_H-120,
+            text="MISS!", fill="#FF4444",
+            font=("Courier",16,"bold"))
+        self._animate_popup(tid, 14)
+
+    # ─── 難度系統 ──────────────────────────────
+    def _check_difficulty(self):
+        new_level = min(self.score//DIFF_SCORE_STEP, DIFF_MAX_LEVEL)
+        if new_level > self._diff_level:
+            self._diff_level    = new_level
+            self._current_speed = ENEMY_SPEED + new_level*DIFF_SPEED_INC
+            self._current_spawn = max(
+                DIFF_SPAWN_MIN, SPAWN_MS - new_level*DIFF_SPAWN_DEC)
+            self._lv_var.set(str(new_level+1))
+            self._show_wave_text(f"LEVEL  {new_level+1}")
+
+    def _show_wave_text(self, text):
+        if self._wave_tid is not None:
+            self.canvas.delete(self._wave_tid)
+        self._wave_tid = self.canvas.create_text(
+            CANVAS_W//2, CANVAS_H//2-60,
+            text=text, fill="#44AAFF",
+            font=("Courier",26,"bold"))
+        self.root.after(1800, self._clear_wave_text)
+
+    def _clear_wave_text(self):
+        if self._wave_tid:
+            self.canvas.delete(self._wave_tid)
+            self._wave_tid = None
+
+    # ─── Combo 中斷 ────────────────────────────
+    def _break_combo(self):
+        self.combo = 0
+        self._combo_var.set("×0")
+        self._combo_lbl.config(fg="#FFEE44")
+
+    # ─── HP ────────────────────────────────────
+    def _take_damage(self, dmg):
+        self.hp = max(0, self.hp - dmg)
+        self._hp_var.set(self.hp)
+        ratio = self.hp / MAX_HP
+        if ratio <= 0.25:
+            self._configure_hp_style("#DD2211")
+            if not self._danger_pulsing:
+                self._danger_pulsing = True
+                self._pulse_danger()
+        elif ratio <= 0.55:
+            self._configure_hp_style("#FF9900")
+        else:
+            self._configure_hp_style("#22DD66")
+        self._flash_damage()
+        if self.hp <= 0:
+            self._end_game()
+
+    def _flash_damage(self):
+        if self._flash_id is not None:
+            self.root.after_cancel(self._flash_id)
+        self.canvas.configure(bg="#300808")
+        self._flash_id = self.root.after(
+            220, lambda: self.canvas.configure(bg="#080820"))
+
+    def _pulse_danger(self):
+        """HP ≤ 25% 時背景持續紅色脈動。"""
+        if self.game_over or self.hp > MAX_HP*0.25:
+            self._danger_pulsing = False
+            self.canvas.configure(bg="#080820")
+            return
+        self._danger_phase = (self._danger_phase+1) % 12
+        shade = int(8 + 14 * math.sin(self._danger_phase * math.pi / 6))
+        bg = f"#{shade+8:02X}0808"
+        self.canvas.configure(bg=bg)
+        self.root.after(80, self._pulse_danger)
+
+    # ─── 敵機生成 ──────────────────────────────
+    def _spawn_enemy(self):
+        if self.game_over:
+            return
+        if not self._paused and len(self.enemies) < MAX_ENEMIES:
+            is_boss   = random.random() < BOSS_PROB and self._diff_level >= 2
+            pool      = BOSS_WORDS if is_boss else NORMAL_WORDS
+            available = [w for w in pool if w.lower() not in self._active_words]
+            if not available:
+                available = pool
+            word  = random.choice(available)
+            self._active_words.add(word.lower())
+
+            margin = 80
+            x      = random.randint(margin, CANVAS_W-margin)
+            enemy  = Enemy(self.canvas, word, x, is_boss=is_boss)
+            enemy.speed = self._current_speed * (1.3 if is_boss else 1.0)
+            self.enemies.append(enemy)
+
+        self.root.after(self._current_spawn, self._spawn_enemy)
+
+    # ─── 主迴圈 ────────────────────────────────
+    def _game_loop(self):
+        if self.game_over or self._paused:
+            return
+
+        # 滾動星空
+        if self._starfield:
+            self._starfield.update()
+
+        dead = []
+        for enemy in self.enemies:
+            if not enemy.alive:
+                dead.append(enemy)
+                continue
+            enemy.move_down()
+            if enemy.y >= CANVAS_H - 65:
+                if self.locked is enemy:
+                    self.locked = None
+                self._active_words.discard(enemy.word.lower())
+                Explosion(self.canvas, enemy.x, enemy.y-20, self.root, count=8)
+                dmg = DAMAGE_BOSS if enemy.is_boss else DAMAGE
+                self._take_damage(dmg)
+                self._break_combo()
+                enemy.destroy()
+                dead.append(enemy)
+
+        self.enemies = [e for e in self.enemies if e not in dead and e.alive]
+
+        for bullet in self.bullets:
+            if bullet.alive:
+                bullet.move()
+        self.bullets = [b for b in self.bullets if b.alive]
+
+        self._check_bullet_collisions()
+        self.root.after(FPS_MS, self._game_loop)
+
+    # ─── 遊戲結束 ──────────────────────────────
+    def _end_game(self):
+        self.game_over = True
+        self._danger_pulsing = False
+        self.canvas.configure(bg="#080820")
+
+        # 更新排行榜
+        self._high_scores.append(self.score)
+        self._high_scores.sort(reverse=True)
+        self._high_scores = self._high_scores[:3]
+
+        cx = CANVAS_W//2
+        self.canvas.create_rectangle(
+            60, 140, CANVAS_W-60, 560,
+            fill="#05050F", outline="#CC2222", width=3)
+        self.canvas.create_text(
+            cx, 210, text="GAME OVER",
+            fill="#FF2222", font=("Courier",40,"bold"))
+        self.canvas.create_text(
+            cx, 285, text=f"SCORE    {self.score:,}",
+            fill="#FFFFFF", font=("Courier",18,"bold"))
+        self.canvas.create_text(
+            cx, 330, text=f"MAX COMBO   ×{self.max_combo}",
+            fill="#FFEE44", font=("Courier",14))
+        self.canvas.create_text(
+            cx, 368, text=f"最高難度   LV {self._diff_level+1}",
+            fill="#88CCFF", font=("Courier",13))
+
+        # 排行榜
+        self.canvas.create_text(
+            cx, 405, text="── 本日排行 ──",
+            fill="#446688", font=("Courier",11))
+        for i, sc in enumerate(self._high_scores):
+            medal = ["🥇","🥈","🥉"][i]
+            self.canvas.create_text(
+                cx, 428+i*24,
+                text=f"{medal}  {sc:,}",
+                fill=["#FFD700","#CCCCCC","#CC8844"][i],
+                font=("Courier",12,"bold"))
+
+        btn = tk.Button(
+            self.canvas,
+            text="▶  再來一局",
+            bg="#112233", fg="#AADDFF",
+            font=("Courier",14,"bold"),
+            activebackground="#1E4466",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT, padx=20, pady=8,
+            command=self._restart)
+        self.canvas.create_window(cx, 515, window=btn)
+
+    def _restart(self):
+        # 停止危險脈動
+        self._danger_pulsing = False
+        if self._flash_id:
+            self.root.after_cancel(self._flash_id)
+
+        # 銷毀舊星空
+        if self._starfield:
+            self._starfield.destroy()
+
+        self.canvas.delete("all")
+        self._reset_state()
+        self._configure_hp_style("#22DD66")
+        self._score_var.set("0")
+        self._combo_var.set("×0")
+        self._combo_lbl.config(fg="#FFEE44")
+        self._lv_var.set("1")
+        self._hp_var.set(MAX_HP)
+        self.canvas.configure(bg="#080820")
+
+        # 重建星空
+        self._starfield = StarField(self.canvas, CANVAS_W, CANVAS_H)
+        self.canvas.create_line(
+            0, CANVAS_H-65, CANVAS_W, CANVAS_H-65,
+            fill="#151530", width=1, dash=(5,5))
+        self._draw_player()
+        self.root.after(900,    self._spawn_enemy)
+        self.root.after(FPS_MS, self._game_loop)
+
+
+# ════════════════════════════════════════════════
+#  進入點
+# ════════════════════════════════════════════════
+
+def main():
+    root = tk.Tk()
+    root.title("⚡ 雷霆打字戰機 V2  Thunder Typer  ⚡")
+    root.resizable(False, False)
+    Game(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
